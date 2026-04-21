@@ -1,6 +1,25 @@
-// @LastEditTime: "2026-04-10"
-// 四川联通周二福利秒杀（接口固化版）
-// 参考 sc_tuesday_seckill_fixed.js 优化
+"use strict";
+
+// 四川联通周二福利秒杀（修正版）
+//
+// 重点修复：
+// 1. 去掉 axios 依赖，改用 Node 18+ 内置 fetch，避免本地缺依赖直接报错。
+// 2. 秒杀成功/失败提示优先从接口返回包中提取，成功时拼接 resultMsg + data。
+// 3. 结合 HAR 的真实请求行为，支持完整 Referer、Cookie 和动态 phoneNumber。
+// 4. 根据 prizeList 的 status 推断上午/下午场，尽量和页面实际状态保持一致。
+//
+// 环境变量示例：
+// export chinaUnicomCookie="占位账号1&占位账号2"
+// export SC_REFERER="完整活动页 Referer"
+// export SC_REFERER_LIST='["完整活动页 Referer 1","完整活动页 Referer 2"]'
+// export SC_COOKIE="从 HAR 抄下来的 Cookie"
+// export SC_COOKIE_LIST='["cookie1=value1; cookie2=value2","cookie3=value3"]'
+// export SC_PHONE_NUMBER="固定 phoneNumber（可选，不配则按 HAR 规律动态生成）"
+// export SC_AM_PRIORITY="QQ音乐,5元话费,喜马拉雅,8GB"
+// export SC_PM_PRIORITY="爱奇艺,哔哩,滴滴,10元话费,8GB"
+// export SC_API_TOKEN="h5_notLoggedIn_xxx"
+// export QYWX_WEBHOOK="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxx"
+// export TEST_MODE=1
 
 const SCRIPT_NAME = "四川联通周二福利秒杀";
 const IS_TEST = String(process.env.TEST_MODE || "").trim() === "1";
@@ -11,7 +30,7 @@ const FIXED_CONFIG = {
   apiToken: process.env.SC_API_TOKEN || "h5_notLoggedIn_7Zd04iNcte2M30gI",
   userAgent:
     "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) unicom{version:iphone_c@12.1001};ltst;OSVersion/18.5",
-  referer: process.env.SC_REFERER || "https://sclyh.169ol.com/micropage/pages/tuesdayBenefits/index",
+  referer: "https://sclyh.169ol.com/micropage/pages/tuesdayBenefits/index",
   phoneTokenMiddle: process.env.SC_PHONE_MIDDLE || "3d0edd901c4",
   phoneTokenPrefixLength: Number(process.env.SC_PHONE_PREFIX_LEN || 5),
   phoneTokenSuffixLength: Number(process.env.SC_PHONE_SUFFIX_LEN || 7),
@@ -53,7 +72,8 @@ const FIXED_CONFIG = {
 };
 
 const API = {
-  checkSCUser: "https://sclyh.169ol.com/2b2c-mobile/api/seckill/checkSCUser",
+  checkSCUser:
+    "https://sclyh.169ol.com/2b2c-mobile/api/seckill/checkSCUser",
   checkUser: "https://sclyh.169ol.com/2b2c-mobile/api/seckill/checkUser",
   prizeList: "https://sclyh.169ol.com/2b2c-mobile/api/seckill/prizeList",
   seckillDo: "https://sclyh.169ol.com/2b2c-mobile/api/seckill/do",
@@ -135,7 +155,6 @@ const SESSION_PRIORITY_ENV = {
   pm: "SC_PM_PRIORITY",
 };
 
-// ==================== 工具 ====================
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -162,7 +181,7 @@ function splitConfigList(raw) {
         return parsed.map((item) => String(item || "").trim()).filter(Boolean);
       }
     } catch (error) {
-      // 回退到按行分割
+      // 回退到按行分割。
     }
   }
 
@@ -183,7 +202,7 @@ function splitPriorityTokens(raw) {
         return parsed.map((item) => String(item || "").trim()).filter(Boolean);
       }
     } catch (error) {
-      // 回退到文本分割
+      // 回退到文本分割。
     }
   }
 
@@ -297,6 +316,30 @@ function extractMobileFromReferer(referer) {
   }
 }
 
+function buildApiDebugLine(tag, packet) {
+  const code = extractCode(packet) || "-";
+  const message = extractMessage(packet) || "-";
+  const data = packet && typeof packet === "object" ? packet.data : undefined;
+
+  if (data && typeof data === "object") {
+    const am = Array.isArray(data.secKillPrizeAM) ? data.secKillPrizeAM.length : 0;
+    const pm = Array.isArray(data.secKillPrizePM) ? data.secKillPrizePM.length : 0;
+    if (am || pm) {
+      return `${tag}响应：code=${code} | msg=${message} | 上午场${am}项 | 下午场${pm}项`;
+    }
+  }
+
+  if (typeof data === "boolean") {
+    return `${tag}响应：code=${code} | msg=${message} | data=${data}`;
+  }
+
+  if (typeof data === "string" && data.trim()) {
+    return `${tag}响应：code=${code} | msg=${message} | data=${data.trim()}`;
+  }
+
+  return `${tag}响应：code=${code} | msg=${message}`;
+}
+
 function toBoolean(value) {
   if (value === true || value === false) return value;
   if (typeof value === "number") {
@@ -392,7 +435,8 @@ function extractDataBoolean(data, candidateKeys = []) {
 
 function buildPacketSummary(packet, fallbackMessage = "") {
   const code = extractCode(packet);
-  const businessText = packet && typeof packet === "object" ? extractBusinessText(packet.data) : "";
+  const businessText =
+    packet && typeof packet === "object" ? extractBusinessText(packet.data) : "";
   const message = extractMessage(packet) || businessText || fallbackMessage;
   return { code, message, raw: packet };
 }
@@ -448,7 +492,6 @@ async function requestJson(method, url, { headers = {}, params = {}, body, timeo
   }
 }
 
-// 定时等待函数
 async function waitForExactTime(targetTimeStr) {
   if (IS_TEST) return;
 
@@ -476,14 +519,13 @@ async function waitForExactTime(targetTimeStr) {
       await sleep(10);
     } else {
       while (new Date() < target) {
-        // 最后 50ms 自旋，尽量压缩事件循环抖动
+        // 最后 50ms 自旋，尽量压缩事件循环抖动。
       }
       break;
     }
   }
 }
 
-// ==================== 核心服务 ====================
 class SeckillService {
   constructor(account, index = 0) {
     this.index = index + 1;
@@ -491,7 +533,8 @@ class SeckillService {
     this.phoneNumber = account.phoneNumber;
     this.extraCookie = account.extraCookie;
     this.referer = account.referer || FIXED_CONFIG.referer;
-    this.displayMobile = account.displayMobile || extractMobileFromReferer(this.referer);
+    this.displayMobile =
+      account.displayMobile || extractMobileFromReferer(this.referer);
     this.prizeNameById = new Map();
   }
 
@@ -597,7 +640,7 @@ class SeckillService {
         timeout: 5000,
       });
 
-      this.debug(`checkSCUser响应：${JSON.stringify(data)}`);
+      this.debug(buildApiDebugLine("checkSCUser", data));
       const summary = buildPacketSummary(data, "资格校验接口未返回提示");
       const eligible = extractDataBoolean(data && data.data, [
         "eligible",
@@ -606,11 +649,14 @@ class SeckillService {
       ]);
 
       console.log("=".repeat(60));
-      console.log("[1] 资格校验结果：", JSON.stringify(data));
+      console.log(
+        `[1] 资格校验结果：code=${summary.code || "-"} | msg=${summary.message || "-"} | data=${eligible}`
+      );
 
-      const displayMessage = summary.message === "Success"
-        ? mergeMessageParts(summary.message, eligible === true ? "data=true(资格通过)" : "data=false(资格不通过)")
-        : summary.message || "资格校验未通过";
+      const displayMessage =
+        summary.message === "Success"
+          ? mergeMessageParts(summary.message, eligible === true ? "data=true(资格通过)" : "data=false(资格不通过)")
+          : summary.message || "资格校验未通过";
 
       if (!isSuccessCode(summary.code) || eligible !== true) {
         this.error(`接口提示：${displayMessage}`);
@@ -636,7 +682,7 @@ class SeckillService {
         timeout: 5000,
       });
 
-      this.debug(`checkUser响应：${JSON.stringify(data)}`);
+      this.debug(buildApiDebugLine("checkUser", data));
       const summary = buildPacketSummary(data, "参与状态接口未返回提示");
       const participated = extractDataBoolean(data && data.data, [
         "joined",
@@ -647,14 +693,17 @@ class SeckillService {
       ]);
 
       console.log("=".repeat(60));
-      console.log("[2] 参与状态校验结果：", JSON.stringify(data));
+      console.log(
+        `[2] 参与状态校验结果：code=${summary.code || "-"} | msg=${summary.message || "-"} | data=${participated}`
+      );
 
-      const displayMessage = summary.message === "Success"
-        ? mergeMessageParts(
-            summary.message,
-            participated === true ? "data=true(今天已参与)" : "data=false(今日未参与)"
-          )
-        : summary.message || "参与状态校验失败";
+      const displayMessage =
+        summary.message === "Success"
+          ? mergeMessageParts(
+              summary.message,
+              participated === true ? "data=true(今天已参与)" : "data=false(今日未参与)"
+            )
+          : summary.message || "参与状态校验失败";
 
       if (!isSuccessCode(summary.code)) {
         this.error(`接口提示：${displayMessage}`);
@@ -686,11 +735,7 @@ class SeckillService {
         timeout: 6000,
       });
 
-      this.debug(`prizeList响应：${JSON.stringify(data)}`);
       const summary = buildPacketSummary(data, "商品列表接口未返回提示");
-
-      console.log("=".repeat(60));
-      console.log("[3] 商品列表结果：", JSON.stringify(data));
 
       if (!isSuccessCode(summary.code)) {
         this.warning(`接口提示：${summary.message || "查询商品失败"}`);
@@ -709,7 +754,6 @@ class SeckillService {
         }
       }
 
-      this.success(`接口提示：${summary.message || "商品列表获取成功"}`);
       this.printPrizeList("上午场", am);
       this.printPrizeList("下午场", pm);
 
@@ -950,9 +994,11 @@ class SeckillService {
         timeout: 6000,
       });
 
-      this.debug(`seckill响应：${JSON.stringify(data)}`);
+      this.debug(buildApiDebugLine("seckill", data));
       console.log("=".repeat(60));
-      console.log("[4] 秒杀执行结果：", JSON.stringify(data));
+      console.log(
+        `[4] 秒杀执行结果：code=${extractCode(data) || "-"} | msg=${extractMessage(data) || "-"}${typeof data?.data === "string" && data.data.trim() ? ` | data=${data.data.trim()}` : ""}`
+      );
 
       const result = this.parseSeckillResult(data);
 
@@ -980,20 +1026,6 @@ class SeckillService {
   }
 
   async start() {
-    this.info(`开始执行 ${SCRIPT_NAME}`);
-
-    if (!this.referer || this.referer === FIXED_CONFIG.referer) {
-      this.warning("建议配置完整 SC_REFERER；HAR 显示实际请求使用的是带 ticket/userNumber 的完整活动页地址");
-    }
-
-    if (this.phoneNumber) {
-      this.info(`使用固定 phoneNumber：${maskString(this.phoneNumber, 4, 4)}`);
-    } else {
-      this.info(
-        `未配置固定 phoneNumber，将按 HAR 规律动态生成：${FIXED_CONFIG.phoneTokenPrefixLength}+${FIXED_CONFIG.phoneTokenMiddle}+${FIXED_CONFIG.phoneTokenSuffixLength}+==`
-      );
-    }
-
     const scheduledSessionKey = new Date().getHours() < 12 ? "am" : "pm";
     const scheduledSession = SESSION_RULES[scheduledSessionKey];
     if (!IS_TEST) {
@@ -1118,7 +1150,6 @@ function parseAccount(rawAccount, index) {
   };
 }
 
-// ==================== 入口 ====================
 async function main() {
   console.log("=".repeat(60));
   console.log(`    ${SCRIPT_NAME}（修正版）`);
@@ -1138,16 +1169,26 @@ async function main() {
   }
 
   console.log(`共读取到 ${accountCount} 个账号`);
+  const useDefaultReferer = REFERER_LIST.length === 0 && !process.env.SC_REFERER;
+  const useDynamicPhone = PHONE_LIST.length === 0 && !process.env.SC_PHONE_NUMBER;
+  if (useDefaultReferer) {
+    console.log("提示：未配置完整 SC_REFERER，当前使用默认活动页地址");
+  }
+  if (useDynamicPhone) {
+    console.log(
+      `提示：未配置固定 phoneNumber，当前按 ${FIXED_CONFIG.phoneTokenPrefixLength}+${FIXED_CONFIG.phoneTokenMiddle}+${FIXED_CONFIG.phoneTokenSuffixLength}+== 动态生成`
+    );
+  }
 
   const services = Array.from({ length: accountCount }, (_, index) => {
     const parsed = parseAccount(ACCOUNT_TOKENS[index] || "", index);
     console.log(
-      `[${nowTime()}] 账号[${index + 1}] token_online=${maskString(
+      `[${nowTime()}] 账号[${index + 1}] 已加载 | token=${maskString(
         parsed.tokenOnline,
         6,
         4
-      )} referer=${parsed.referer ? "已配置" : "未配置"} phoneNumber=${
-        parsed.phoneNumber ? maskString(parsed.phoneNumber, 4, 4) : "动态生成"
+      )} | ${parsed.referer ? "自定义Referer" : "默认Referer"} | ${
+        parsed.phoneNumber ? "固定phoneNumber" : "动态phoneNumber"
       }`
     );
     return new SeckillService(parsed, index);
