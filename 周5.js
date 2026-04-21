@@ -1,4 +1,4 @@
-// @LastEditTime: 2026-04-14 | 四川联通周二福利秒杀（并发抢购版）
+// @LastEditTime: 2026-04-21 | 四川联通周二福利秒杀（定时抢购版）
 const $ = new Env("四川联通周二福利");
 const crypto = require("crypto");
 
@@ -13,16 +13,17 @@ const API_CHECK_USER = "https://sclyh.169ol.com/2b2c-mobile/api/seckill/checkUse
 const API_PRIZE_LIST = "https://sclyh.169ol.com/2b2c-mobile/api/seckill/prizeList";
 const API_SECKILL_DO = "https://sclyh.169ol.com/2b2c-mobile/api/seckill/do";
 
-// 抢购商品配置（根据实际查询结果动态调整）
+// 上午场11:00开始抢购商品配置
 const MORNING_TARGETS = [
   { id: "4", name: "QQ音乐会员-周卡" },
   { id: "2", name: "5元话费券" },
   { id: "3", name: "喜马拉雅会员-周卡" }
 ];
 
+// 下午场17:00开始抢购商品配置
 const AFTERNOON_TARGETS = [
   { id: "11", name: "爱奇艺月卡" },
-  { id: "12", name: "哔哩哗哩大会员" },
+  { id: "12", name: "哔哩哔哩大会员" },
   { id: "13", name: "滴滴快车5元代金券" }
 ];
 
@@ -33,29 +34,29 @@ function Env(n) { return { name: n, log: console.log }; }
 // 等待到指定时间并显示倒计时
 async function waitUntil(targetHour, targetMinute, targetSecond = 0) {
   let lastLogTime = 0;
-  
+
   while (true) {
     const now = new Date();
     const currentHour = now.getHours();
     const currentMinute = now.getMinutes();
     const currentSecond = now.getSeconds();
-    
+
     if (currentHour > targetHour ||
         (currentHour === targetHour && currentMinute > targetMinute) ||
         (currentHour === targetHour && currentMinute === targetMinute && currentSecond >= targetSecond)) {
       break;
     }
-    
+
     // 计算倒计时
     const targetTime = new Date();
     targetTime.setHours(targetHour, targetMinute, targetSecond, 0);
     const diff = targetTime - now;
-    
+
     if (diff > 0) {
       const hours = Math.floor(diff / (1000 * 60 * 60));
       const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
       const seconds = Math.floor((diff % (1000 * 60)) / 1000);
-      
+
       // 每秒显示一次倒计时
       const currentTime = Date.now();
       if (currentTime - lastLogTime >= 1000) {
@@ -63,7 +64,7 @@ async function waitUntil(targetHour, targetMinute, targetSecond = 0) {
         lastLogTime = currentTime;
       }
     }
-    
+
     await sleep(100);
   }
 }
@@ -212,7 +213,7 @@ class UnicomAuthService {
   async seckill(prizeId, prizeName) {
     const cfg = this.getConfig();
     const axios = require('axios');
-    
+
     // 前置资格校验
     this.log(`🔍 执行前置资格校验`);
     try {
@@ -230,22 +231,22 @@ class UnicomAuthService {
         "User-Agent": cfg.headers["User-Agent"],
         "Referer": cfg.headers.Referer
       };
-      
+
       this.log(`📡 发送资格校验请求：活动ID=${cfg.activityId}`);
       this.log(`📡 请求URL：${checkUrl}`);
       this.log(`📡 请求参数：${JSON.stringify(checkParams)}`);
-      
+
       const checkResponse = await axios.get(checkUrl, { headers: checkHeaders, params: checkParams, timeout: 5000 });
       const checkData = checkResponse.data;
-      
+
       this.log(`📡 响应状态码：${checkResponse.status}`);
       this.log(`📡 响应结果：${JSON.stringify(checkData)}`);
-      
+
       if (checkData.resultCode !== "0000" || checkData.data !== true) {
         this.log(`❌ 资格校验失败：${checkData.resultCode} | ${checkData.resultMsg}`);
         return false;
       }
-      
+
       this.log(`✅ 资格校验通过，可以执行秒杀`);
     } catch (e) {
       this.log(`❌ 资格校验异常：${e.message}`);
@@ -256,7 +257,7 @@ class UnicomAuthService {
       }
       return false;
     }
-    
+
     // 执行秒杀
     try {
       const ts = Date.now();
@@ -277,14 +278,14 @@ class UnicomAuthService {
       this.log(`📡 发送秒杀请求：奖品ID=${prizeId}，活动ID=${cfg.activityId}`);
       this.log(`📡 请求URL：${url}`);
       this.log(`📡 请求参数：${JSON.stringify(params)}`);
-      
+
       // 发送请求
       const response = await axios.post(url, {}, { headers, params, timeout: 10000 });
       const data = response.data;
-      
+
       this.log(`📡 响应状态码：${response.status}`);
       this.log(`📡 响应结果：${JSON.stringify(data)}`);
-      
+
       if (data.resultCode === "0000") {
         this.log(`🎉 秒杀成功：${prizeName}`);
         // 推送消息到企业微信
@@ -325,96 +326,107 @@ class UnicomAuthService {
     return true;
   }
 
-  // 上午场抢购
+  // 上午场抢购 - 等待到11:00准时开始
   async morningSeckill() {
     if (!this.eligible) {
       this.log("❌ 无参与资格，跳过上午场");
-      return;
+      return false;
     }
-    
-    this.log("🌅 开始上午场抢购");
-    
+
+    this.log("🌅 上午场准备就绪，等待11:00准时开始抢购...");
+
+    // 等待到11:00
+    await waitUntil(11, 0, 0);
+    this.log("🎯 11:00时间到，开始执行抢购！");
+
     // 先查询商品列表，确认正确的奖品ID
     const prizeList = await this.queryPrizeList();
     if (!prizeList) {
       this.log("❌ 无法获取商品列表，跳过上午场");
-      return;
+      return false;
     }
-    
-    // 模拟时间，直接执行抢购
-    this.log("⏰ 模拟10:00 开始抢购");
-    
+
     // 依次尝试抢购
     for (const target of MORNING_TARGETS) {
       this.log(`🎯 尝试抢购：${target.name}（ID:${target.id}）`);
       const success = await this.seckill(target.id, target.name);
       if (success) {
         this.log(`✅ 上午场抢购成功：${target.name}`);
-        return;
+        return true;
       }
       // 间隔1秒后尝试下一个
       await sleep(1000);
     }
-    
+
     this.log("❌ 上午场抢购失败");
+    return false;
   }
 
-  // 下午场抢购
+  // 下午场抢购 - 等待到17:00准时开始
   async afternoonSeckill() {
     if (!this.eligible) {
       this.log("❌ 无参与资格，跳过下午场");
-      return;
+      return false;
     }
-    
-    this.log("🌆 开始下午场抢购");
-    
+
+    this.log("🌆 下午场准备就绪，等待17:00准时开始抢购...");
+
+    // 等待到17:00
+    await waitUntil(17, 0, 0);
+    this.log("🎯 17:00时间到，开始执行抢购！");
+
     // 先查询商品列表，确认正确的奖品ID
     const prizeList = await this.queryPrizeList();
     if (!prizeList) {
       this.log("❌ 无法获取商品列表，跳过下午场");
-      return;
+      return false;
     }
-    
-    // 模拟时间，直接执行抢购
-    this.log("⏰ 模拟17:00 开始抢购");
-    
+
     // 依次尝试抢购
     for (const target of AFTERNOON_TARGETS) {
       this.log(`🎯 尝试抢购：${target.name}（ID:${target.id}）`);
       const success = await this.seckill(target.id, target.name);
       if (success) {
         this.log(`✅ 下午场抢购成功：${target.name}`);
-        return;
+        return true;
       }
       // 间隔1秒后尝试下一个
       await sleep(1000);
     }
-    
+
     this.log("❌ 下午场抢购失败");
+    return false;
   }
 
   async start() {
     this.log("🚀 开始四川联通周二福利秒杀");
-    
-    // 检查资格
+
+    // 检查资格（登录验证）
     const eligible = await this.checkEligibility();
     if (!eligible) return;
-    
+
     // 查询奖品列表
     await this.queryPrizeList();
-    
+
     const now = new Date();
     const currentHour = now.getHours();
-    
-    // 执行抢购
-    if (currentHour < 17) {
+    const currentMinute = now.getMinutes();
+
+    // 根据当前时间决定执行逻辑
+    if (currentHour < 11) {
+      this.log("⏰ 当前时间 < 11:00，先等待上午场11:00开始");
       await this.morningSeckill();
-      // 如果上午场失败且时间未到下午场，等待到下午场
-      if (currentHour < 17) {
-        this.log("⏳ 等待下午场开始");
-        await this.afternoonSeckill();
-      }
+      this.log("⏳ 上午场结束，等待下午场17:00开始");
+      await this.afternoonSeckill();
+
+    } else if (currentHour >= 11 && currentHour < 12) {
+      this.log(`⏰ 当前时间 ${currentHour}:${currentMinute.toString().padStart(2, '0')}，直接执行上午场抢购`);
+      await this.morningSeckill();
+      this.log("⏳ 等待下午场17:00开始");
+      await this.afternoonSeckill();
+
     } else {
+      this.log(`⏰ 当前时间 ${currentHour}:${currentMinute.toString().padStart(2, '0')} >= 12:00，只执行下午场17:00抢购`);
       await this.afternoonSeckill();
     }
   }
@@ -423,33 +435,33 @@ class UnicomAuthService {
 // ==================== 入口 ====================
 async function main() {
   console.log("=====================================");
-  console.log("    四川联通周二福利秒杀（并发抢购版）");
+  console.log("    四川联通周二福利秒杀（定时抢购版）");
   console.log("=====================================");
   console.log("📋 开始执行脚本...");
-  
+
   // 模拟一个token，以便测试
   const tokenStr = "test_token";
   const tokens = tokenStr.split(/[\n&@]/).map(t => t.trim()).filter(Boolean);
-  
+
   console.log(`📋 环境变量检查：找到 ${tokens.length} 个token`);
-  
+
   if (tokens.length === 0) {
     console.log("❌ 请配置环境变量：chinaUnicomCookie");
     return;
   }
-  
+
   // 并发检查资格
   console.log("🚦 开始并发检查账号资格");
   const services = tokens.map((token, i) => new UnicomAuthService(token, i));
   const eligibilityChecks = services.map(service => service.checkEligibility());
   await Promise.all(eligibilityChecks);
   console.log("✅ 所有账号资格检查完成");
-  
+
   // 并发执行抢购
   console.log("🚀 开始并发执行抢购任务");
   const seckillTasks = services.map(service => service.start());
   await Promise.all(seckillTasks);
-  
+
   console.log("🏁 所有账号执行完成");
 }
 
