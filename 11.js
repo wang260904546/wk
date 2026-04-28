@@ -28,6 +28,7 @@
 const SCRIPT_NAME = "四川联通周二福利秒杀";
 const IS_TEST = String(process.env.TEST_MODE || "").trim() === "1";
 const DEBUG_MODE = String(process.env.DEBUG_MODE || "").trim() === "1";
+const QYWX_WEBHOOK_KEY = "d0ee6878-96fe-46d9-b18e-997edfec7b32";
 
 function envInt(name, fallback) {
   const raw = String(process.env[name] || "").trim();
@@ -42,7 +43,7 @@ const FIXED_CONFIG = {
   host: "sclyh.169ol.com",
   apiToken: process.env.SC_API_TOKEN || "h5_notLoggedIn_7Zd04iNcte2M30gI",
   userAgent:
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) unicom{version:iphone_c@12.1001};ltst;OSVersion/18.5",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko)  unicom{version:iphone_c@12.1001};ltst;OSVersion/18.5",
   referer: "https://sclyh.169ol.com/micropage/pages/tuesdayBenefits/index",
   phoneTokenMiddle: process.env.SC_PHONE_MIDDLE || "3d0edd901c4",
   phoneTokenPrefixLength: Number(process.env.SC_PHONE_PREFIX_LEN || 5),
@@ -82,6 +83,28 @@ const FIXED_CONFIG = {
     "异常",
     "错误",
   ],
+};
+
+const SESSION_RULES = {
+  am: {
+    label: "上午场",
+    startTime: "10:59:59.900",
+    preferred: [
+      { label: "QQ音乐", keywords: ["QQ音乐"] },
+      { label: "5元话费", keywords: ["5元话费", "5元"] },
+      { label: "喜马拉雅", keywords: ["喜马拉雅"] },
+    ],
+  },
+  pm: {
+    label: "下午场",
+    startTime: "16:59:59.900",
+    preferred: [
+      { label: "爱奇艺", keywords: ["爱奇艺"] },
+      { label: "哔哩", keywords: ["哔哩哔哩", "哔哩哗哩", "哔哩", "B站"] },
+      { label: "滴滴", keywords: ["滴滴快车", "滴滴"] },
+      { label: "10元话费", keywords: ["10元话费", "10元"] },
+    ],
+  },
 };
 
 const RUNTIME_CONFIG = {
@@ -129,30 +152,6 @@ const API = {
   checkUser: "https://sclyh.169ol.com/2b2c-mobile/api/seckill/checkUser",
   prizeList: "https://sclyh.169ol.com/2b2c-mobile/api/seckill/prizeList",
   seckillDo: "https://sclyh.169ol.com/2b2c-mobile/api/seckill/do",
-};
-
-const SESSION_RULES = {
-  am: {
-    label: "上午场",
-    startTime: "10:59:59.900",
-    preferred: [
-      { label: "QQ音乐", keywords: ["QQ音乐"] },
-      { label: "5元话费", keywords: ["5元话费", "5元"] },
-      { label: "喜马拉雅", keywords: ["喜马拉雅"] },
-      { label: "8GB", keywords: ["8GB"] },
-    ],
-  },
-  pm: {
-    label: "下午场",
-    startTime: "16:59:59.900",
-    preferred: [
-      { label: "爱奇艺", keywords: ["爱奇艺"] },
-      { label: "哔哩", keywords: ["哔哩哔哩", "哔哩哗哩", "哔哩", "B站"] },
-      { label: "滴滴", keywords: ["滴滴快车", "滴滴"] },
-      { label: "10元话费", keywords: ["10元话费", "10元"] },
-      { label: "8GB", keywords: ["8GB"] },
-    ],
-  },
 };
 
 const SUCCESS_CODES = new Set(["0000", "0", "200", "20000", "SUCCESS", "success"]);
@@ -320,7 +319,12 @@ function randomString(length) {
   return output;
 }
 
-function buildRandomPhoneNumber() {
+function buildRandomPhoneNumber(mobile = "") {
+  if (mobile && mobile.length === 11) {
+    const crypto = require("crypto");
+    const hash = crypto.createHash('md5').update(mobile).digest('hex');
+    return hash.slice(0, FIXED_CONFIG.phoneTokenPrefixLength) + FIXED_CONFIG.phoneTokenMiddle + hash.slice(-FIXED_CONFIG.phoneTokenSuffixLength) + "==";
+  }
   return (
     `${randomString(FIXED_CONFIG.phoneTokenPrefixLength)}` +
     `${FIXED_CONFIG.phoneTokenMiddle}` +
@@ -629,6 +633,31 @@ class SeckillService {
     }
   }
 
+  async sendWechatMessage(content) {
+    const webhookUrl = `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=${QYWX_WEBHOOK_KEY}`;
+    if (!QYWX_WEBHOOK_KEY || QYWX_WEBHOOK_KEY === "your_key_here") return;
+
+    try {
+      await requestJson("POST", webhookUrl, {
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: {
+          msgtype: "text",
+          text: { content },
+        },
+        timeout: 5000,
+      });
+      this.success("企业微信推送成功");
+    } catch (error) {
+      this.error(`企业微信推送失败：${formatError(error)}`);
+    }
+  }
+
+  accountLabel() {
+    return this.displayMobile ? maskString(this.displayMobile, 3, 4) : `账号[${this.index}]`;
+  }
+
   getHeaders() {
     const cookie = joinCookies([
       this.extraCookie,
@@ -637,15 +666,16 @@ class SeckillService {
 
     const headers = {
       Host: FIXED_CONFIG.host,
-      Accept: "application/json, text/plain, */*",
+      Accept: "*/*",
       "Accept-Encoding": "gzip, deflate, br",
-      "Accept-Language": "zh-CN,zh;q=0.9",
+      "Accept-Language": "zh-CN,en-US;q=0.8",
       "Content-Type": "application/json;charset=UTF-8",
       Origin: `https://${FIXED_CONFIG.host}`,
       Referer: this.referer,
       Connection: "keep-alive",
       "Sec-Fetch-Mode": "cors",
       "Sec-Fetch-Site": "same-origin",
+      "Sec-Fetch-Dest": "empty",
       "User-Agent": FIXED_CONFIG.userAgent,
       token: FIXED_CONFIG.apiToken,
     };
@@ -658,7 +688,11 @@ class SeckillService {
   }
 
   nextPhoneNumber() {
-    return this.phoneNumber || buildRandomPhoneNumber();
+    if (this.phoneNumber) return this.phoneNumber;
+    if (this.displayMobile && this.displayMobile.length === 11) {
+      return buildRandomPhoneNumber(this.displayMobile);
+    }
+    return buildRandomPhoneNumber();
   }
 
   getCommonParams(extra = {}) {
@@ -979,7 +1013,10 @@ class SeckillService {
 
   isRunnablePrize(prize) {
     const stock = Number(prize.sessionStock ?? prize.stock ?? 0);
-    return stock > 0;
+    if (stock <= 0) return false;
+    const name = this.getPrizeName(prize);
+    if (name.includes("8GB") || name.includes("8gb")) return false;
+    return true;
   }
 
   buildSessionPlan(prizeListResult, preferredSessionKey) {
@@ -1527,12 +1564,13 @@ class SeckillService {
 
     if (!successResult) {
       this.error("本轮秒杀未成功");
+      await this.sendWechatMessage(`${this.accountLabel()} 本轮秒杀未成功`);
       return;
     }
 
-    this.success(
-      `${successResult.prize.name} 秒杀完成，接口提示：${successResult.result.message}`
-    );
+    const successMsg = `${successResult.prize.name} 秒杀完成，接口提示：${successResult.result.message}`;
+    this.success(successMsg);
+    await this.sendWechatMessage(`${this.accountLabel()} ${successMsg}`);
   }
 }
 

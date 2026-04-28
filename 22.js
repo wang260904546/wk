@@ -28,10 +28,55 @@ const PRIZE_NAME_MAP = {
 };
 
 const IS_TEST = (process.env.TEST_MODE || "").toString() === "1";
+const SC_PHONE_NUMBER = process.env.SC_PHONE_NUMBER || "";
+const SC_REFERER = process.env.SC_REFERER || "";
+const SC_COOKIE = process.env.SC_COOKIE || "";
+const QYWX_WEBHOOK_KEY = "d0ee6878-96fe-46d9-b18e-997edfec7b32";
+
+const SESSION_CONFIG = {
+  am: { label: "上午场", startTime: "11:00:00.020", targetIds: ["4", "3", "2"], targetNames: ["QQ音乐会员-周卡", "喜马拉雅会员-周卡", "5元话费券"] },
+  pm: { label: "下午场", startTime: "17:00:00.020", targetIds: ["11", "12", "13"], targetNames: ["爱奇艺月卡", "哔哩哗哩大会员", "滴滴快车5元代金券"] }
+};
+const EXCLUDED_PRIZE_IDS = new Set(["10"]);
 
 // ==================== 工具 ====================
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function Env(n) { return { name: n, log: console.log }; }
+
+function randomString(length) {
+  const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz";
+  let output = "";
+  for (let i = 0; i < length; i++) {
+    output += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  return output;
+}
+
+function extractMobileFromReferer(referer) {
+  try {
+    const url = new URL(referer);
+    return url.searchParams.get("userNumber") || url.searchParams.get("desmobile") || "";
+  } catch (e) {
+    return "";
+  }
+}
+
+function generatePhoneNumberFromMobile(mobile) {
+  if (!mobile || mobile.length !== 11) return "";
+  const hash = crypto.createHash('md5').update(mobile).digest('hex');
+  return hash.slice(0, 5) + "3d0edd901c4" + hash.slice(-7) + "==";
+}
+
+function buildRandomPhoneNumber() {
+  if (SC_PHONE_NUMBER) {
+    return SC_PHONE_NUMBER;
+  }
+  const mobile = extractMobileFromReferer(SC_REFERER);
+  if (mobile) {
+    return generatePhoneNumberFromMobile(mobile);
+  }
+  return randomString(5) + "3d0edd901c4" + randomString(7) + "==";
+}
 
 // 定时等待函数
 async function waitForExactTime(targetTimeStr) {
@@ -97,25 +142,27 @@ class SeckillService {
   }
 
   getConfig() {
+    const refererUrl = SC_REFERER || "https://sclyh.169ol.com/micropage/pages/tuesdayBenefits/index";
+    const cookie = SC_COOKIE || "";
     return {
       baseUrl: "https://sclyh.169ol.com",
       activityId: ACTIVITY_ID,
-      phoneNumber: "uqqle2c5d3806d18fubdk9e==",
+      phoneNumber: buildRandomPhoneNumber(),
       headers: {
         "Host": "sclyh.169ol.com",
         "Accept": "*/*",
         "Sec-Fetch-Site": "same-origin",
         "Accept-Language": "zh-CN,en-US;q=0.8",
         "Accept-Encoding": "gzip, deflate, br",
-        "token": "h5_notLoggedIn_7Zd04iNcte2M30gI",
+        "token": this.token_online || "h5_notLoggedIn_7Zd04iNcte2M30gI",
         "Sec-Fetch-Mode": "cors",
+        "Content-Type": "application/json;charset=UTF-8",
         "Origin": "https://sclyh.169ol.com",
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) unicom{version:iphone_c@12.1001};ltst;OSVersion/18.5",
-        "Referer": "https://sclyh.169ol.com/micropage/pages/tuesdayBenefits/index",
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko)  unicom{version:iphone_c@12.1001};ltst;OSVersion/18.5",
+        "Referer": refererUrl,
         "Connection": "keep-alive",
-        "Content-Type": "application/x-www-form-urlencoded",
         "Sec-Fetch-Dest": "empty",
-        "Cookie": "br-session-cache-e4466c71aafc4b578efcde9a51971345=[{\"appId\":\"e4466c71aafc4b578efcde9a51971345\",\"sessionID\":\"2b693183-496c-4b3d-ac97-8d292fcbdc22\",\"lastVisitedTime\":1775530832115}]; _pk_id.3.56f6=929217b66ee11f90.1775527377."
+        ...(cookie ? { "Cookie": cookie } : {})
       }
     };
   }
@@ -212,7 +259,31 @@ class SeckillService {
     }
   }
 
+  async sendWechatMessage(content) {
+    const webhookUrl = `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=${QYWX_WEBHOOK_KEY}`;
+    if (!QYWX_WEBHOOK_KEY || QYWX_WEBHOOK_KEY === "your_key_here") return;
+
+    try {
+      const axios = require("axios");
+      await axios.post(webhookUrl, {
+        msgtype: "text",
+        text: { content }
+      }, {
+        headers: { "Content-Type": "application/json" },
+        timeout: 5000
+      });
+      this.success("企业微信推送成功");
+    } catch (e) {
+      this.error(`企业微信推送失败: ${e.message}`);
+    }
+  }
+
   async seckill(prizeId, prizeName) {
+    if (EXCLUDED_PRIZE_IDS.has(String(prizeId))) {
+      this.warning(`跳过排除商品：${prizeName}（ID:${prizeId}）`);
+      return false;
+    }
+    
     const cfg = this.getConfig();
     const axios = require("axios");
     try {
@@ -252,27 +323,18 @@ class SeckillService {
     if (!list) return;
 
     const hour = new Date().getHours();
-    let targetIds, targetNames, scheduledTime;
+    const sessionKey = hour < 12 ? "am" : "pm";
+    const session = SESSION_CONFIG[sessionKey];
 
-    if (hour < 12) {
-      // 上午场：11:00开始抢QQ音乐（12:00之前都可以抢购）
-      scheduledTime = "11:00:00.020";
-      targetIds = ["4", "3", "2"];
-      targetNames = ["QQ音乐会员-周卡", "喜马拉雅会员-周卡", "5元话费券"];
-      this.info(`正在等待上午场开始时间 [${scheduledTime}]...`);
-      await waitForExactTime(scheduledTime);
-      this.success(`上午场开始时间已到，开始抢购！`);
-    } else {
-      // 下午场：17:00开始抢爱奇艺月卡
-      scheduledTime = "17:00:00.020";
-      targetIds = ["11", "12", "13"];
-      targetNames = ["爱奇艺月卡", "哔哩哗哩大会员", "滴滴快车5元代金券"];
-      this.info(`正在等待下午场开始时间 [${scheduledTime}]...`);
-      await waitForExactTime(scheduledTime);
-      this.success(`下午场开始时间已到，开始抢购！`);
-    }
+    this.info(`正在等待${session.label}开始时间 [${session.startTime}]...`);
+    await waitForExactTime(session.startTime);
+    this.success(`${session.label}开始时间已到，开始抢购！`);
+
+    const targetIds = session.targetIds;
+    const targetNames = session.targetNames;
 
     let success = false;
+    let successPrizeName = "";
     for (let i = 0; i < targetIds.length; i++) {
       const prizeId = targetIds[i];
       const prizeName = targetNames[i] || PRIZE_NAME_MAP[prizeId] || `商品${prizeId}`;
@@ -280,6 +342,7 @@ class SeckillService {
       const result = await this.seckill(prizeId, prizeName);
       if (result) {
         success = true;
+        successPrizeName = prizeName;
         break;
       }
       this.warning(`${prizeName} 领取失败，尝试下一个...`);
@@ -288,6 +351,9 @@ class SeckillService {
 
     if (!success) {
       this.error("所有商品均领取失败");
+      await this.sendWechatMessage(`账号[${this.index}] 本轮秒杀未成功`);
+    } else {
+      await this.sendWechatMessage(`账号[${this.index}] ${successPrizeName} 秒杀成功`);
     }
   }
 }

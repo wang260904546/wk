@@ -28,10 +28,53 @@ const PRIZE_NAME_MAP = {
 };
 
 const IS_TEST = (process.env.TEST_MODE || "").toString() === "1";
+const SC_PHONE_NUMBER = process.env.SC_PHONE_NUMBER || "";
+const SC_REFERER = process.env.SC_REFERER || "";
+const SC_COOKIE = process.env.SC_COOKIE || "";
+
+const SESSION_CONFIG = {
+  am: { label: "上午场", startTime: "11:00:00.020", defaultIds: ["4", "3", "2"], defaultNames: ["QQ音乐会员-周卡", "喜马拉雅会员-周卡", "5元话费券"] },
+  pm: { label: "下午场", startTime: "17:00:00.020", defaultIds: ["11", "12", "13"], defaultNames: ["爱奇艺月卡", "哔哩哗哩大会员", "滴滴快车5元代金券"] }
+};
 
 // ==================== 工具 ====================
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function Env(n) { return { name: n, log: console.log }; }
+
+function randomString(length) {
+  const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz";
+  let output = "";
+  for (let i = 0; i < length; i++) {
+    output += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  return output;
+}
+
+function extractMobileFromReferer(referer) {
+  try {
+    const url = new URL(referer);
+    return url.searchParams.get("userNumber") || url.searchParams.get("desmobile") || "";
+  } catch (e) {
+    return "";
+  }
+}
+
+function generatePhoneNumberFromMobile(mobile) {
+  if (!mobile || mobile.length !== 11) return "";
+  const hash = crypto.createHash('md5').update(mobile).digest('hex');
+  return hash.slice(0, 5) + "3d0edd901c4" + hash.slice(-7) + "==";
+}
+
+function buildRandomPhoneNumber() {
+  if (SC_PHONE_NUMBER) {
+    return SC_PHONE_NUMBER;
+  }
+  const mobile = extractMobileFromReferer(SC_REFERER);
+  if (mobile) {
+    return generatePhoneNumberFromMobile(mobile);
+  }
+  return randomString(5) + "3d0edd901c4" + randomString(7) + "==";
+}
 
 // 定时等待函数
 async function waitForExactTime(targetTimeStr) {
@@ -71,23 +114,50 @@ class SeckillService {
     console.log(`[${timeStr}] 账号[${this.index}] ${msg}`);
   }
 
+  info(msg) {
+    this.log(`ℹ️ ${msg}`);
+  }
+
+  success(msg) {
+    this.log(`✅ ${msg}`);
+  }
+
+  warning(msg) {
+    this.log(`⚠️ ${msg}`);
+  }
+
+  error(msg) {
+    this.log(`❌ ${msg}`);
+  }
+
+  debug(msg) {
+    if (IS_TEST) {
+      this.log(`🔍 ${msg}`);
+    }
+  }
+
   getConfig() {
+    const refererUrl = SC_REFERER || "https://sclyh.169ol.com/micropage/pages/tuesdayBenefits/index";
+    const cookie = SC_COOKIE || "";
     return {
       baseUrl: "https://sclyh.169ol.com",
       activityId: ACTIVITY_ID,
-      phoneNumber: "uqqle2c5d3806d18fubdk9e==",
+      phoneNumber: buildRandomPhoneNumber(),
       headers: {
         "Host": "sclyh.169ol.com",
         "Accept": "*/*",
         "Sec-Fetch-Site": "same-origin",
         "Accept-Language": "zh-CN,en-US;q=0.8",
-        "token": "h5_notLoggedIn_7Zd04iNcte2M30gI",
+        "Accept-Encoding": "gzip, deflate, br",
+        "token": this.token_online || "h5_notLoggedIn_7Zd04iNcte2M30gI",
         "Sec-Fetch-Mode": "cors",
         "Content-Type": "application/json;charset=UTF-8",
-        "Referer": "https://sclyh.169ol.com/micropage/pages/tuesdayBenefits/index",
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) unicom{version:iphone_c@12.1001};ltst;OSVersion/18.5",
+        "Origin": "https://sclyh.169ol.com",
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko)  unicom{version:iphone_c@12.1001};ltst;OSVersion/18.5",
+        "Referer": refererUrl,
         "Connection": "keep-alive",
-        "Sec-Fetch-Dest": "empty"
+        "Sec-Fetch-Dest": "empty",
+        ...(cookie ? { "Cookie": cookie } : {})
       }
     };
   }
@@ -209,41 +279,25 @@ class SeckillService {
     const cfg = this.getConfig();
     const axios = require("axios");
     try {
-      const requestData = {
+      const params = {
         prizeConfigId: prizeId,
         phoneNumber: cfg.phoneNumber,
         activityId: cfg.activityId,
         timestamp: Date.now()
       };
-      this.log(`🚀 执行秒杀: ${prizeName}（ID:${prizeId}）`);
-      this.log(`📋 请求参数: ${JSON.stringify(requestData)}`);
-      this.log(`📋 请求头: ${JSON.stringify(cfg.headers)}`);
-      
-      const response = await axios.post(API_SECKILL_DO, requestData, { 
-        headers: cfg.headers,
-        validateStatus: false // 不抛出400错误，让我们查看完整响应
-      });
-      
-      this.log(`📋 响应状态码: ${response.status}`);
-      this.log(`📋 响应头: ${JSON.stringify(response.headers)}`);
-      this.log(`📋 响应数据: ${JSON.stringify(response.data)}`);
+      this.info(`执行秒杀: ${prizeName}（ID:${prizeId}）`);
+      const { data } = await axios.post(API_SECKILL_DO, {}, { headers: cfg.headers, params });
+      this.debug(`seckill响应: ${JSON.stringify(data)}`);
 
-      if (response.status === 200 && response.data.resultCode === "0000") {
-        this.log(`🎉 秒杀成功：${prizeName}`);
-        // 推送消息到企业微信
-        const phoneNumber = cfg.phoneNumber || "未知";
-        await this.sendWechatMessage(`${phoneNumber} 秒杀成功的商品：${prizeName}`);
+      if (data.resultCode === "0000") {
+        this.success(`秒杀成功：${prizeName}`);
         return true;
       } else {
-        this.log(`❌ 秒杀失败：状态码 ${response.status} | ${response.data.resultCode} | ${response.data.resultMsg}`);
+        this.error(`秒杀失败：${data.resultCode} | ${data.resultMsg}`);
         return false;
       }
     } catch (e) {
-      this.log(`❌ 秒杀异常：${e.message}`);
-      if (e.response) {
-        this.log(`📋 异常响应状态码: ${e.response.status}`);
-        this.log(`📋 异常响应数据: ${JSON.stringify(e.response.data)}`);
-      }
+      this.error(`秒杀异常：${e.message}`);
       return false;
     }
   }
@@ -260,69 +314,39 @@ class SeckillService {
     const list = await this.queryPrizeList();
     if (!list) return;
 
-    // 从查询结果中获取实际的商品ID
     const hour = new Date().getHours();
+    const sessionKey = hour < 12 ? "am" : "pm";
+    const session = SESSION_CONFIG[sessionKey];
+
+    this.log(`⏳ 正在等待${session.label}开始时间 [${session.startTime}]...`);
+    await waitForExactTime(session.startTime);
+    this.log(`🚀 ${session.label}开始时间已到，开始抢购！`);
+    
     let targetIds = [];
     let targetNames = [];
-    let scheduledTime;
-
-    if (hour < 12) {
-      // 上午场：11:00开始
-      scheduledTime = "11:00:00.020";
-      this.log(`⏳ 正在等待上午场开始时间 [${scheduledTime}]...`);
-      await waitForExactTime(scheduledTime);
-      this.log(`🚀 上午场开始时间已到，开始抢购！`);
-      
-      // 重新查询商品列表，确保获取最新的商品ID
-      const latestList = await this.queryPrizeList();
-      if (latestList && latestList.am) {
-        // 优先选择有库存的商品
-        const availableItems = latestList.am.filter(item => item.sessionStock > 0);
-        if (availableItems.length > 0) {
-          targetIds = availableItems.map(item => item.id);
-          targetNames = availableItems.map(item => item.miniPrizeName);
-          this.log(`📋 上午场可用商品：${targetNames.join(', ')}`);
-        } else {
-          this.log("⚠️ 上午场无可用商品");
-          return;
-        }
-      }
-    } else {
-      // 下午场：17:00开始
-      scheduledTime = "17:00:00.020";
-      this.log(`⏳ 正在等待下午场开始时间 [${scheduledTime}]...`);
-      await waitForExactTime(scheduledTime);
-      this.log(`🚀 下午场开始时间已到，开始抢购！`);
-      
-      // 重新查询商品列表，确保获取最新的商品ID
-      const latestList = await this.queryPrizeList();
-      if (latestList && latestList.pm) {
-        // 优先选择有库存的商品
-        const availableItems = latestList.pm.filter(item => item.sessionStock > 0);
-        if (availableItems.length > 0) {
-          targetIds = availableItems.map(item => item.id);
-          targetNames = availableItems.map(item => item.miniPrizeName);
-          this.log(`📋 下午场可用商品：${targetNames.join(', ')}`);
-        } else {
-          this.log("⚠️ 下午场无可用商品");
-          return;
-        }
+    
+    const latestList = await this.queryPrizeList();
+    const listKey = sessionKey === "am" ? "am" : "pm";
+    if (latestList && latestList[listKey]) {
+      const availableItems = latestList[listKey].filter(item => item.sessionStock > 0 && item.miniPrizeName && !item.miniPrizeName.includes("8GB") && !item.miniPrizeName.includes("8gb"));
+      if (availableItems.length > 0) {
+        targetIds = availableItems.map(item => item.id);
+        targetNames = availableItems.map(item => item.miniPrizeName);
+        this.log(`📋 ${session.label}可用商品：${targetNames.join(', ')}`);
+      } else {
+        this.log(`⚠️ ${session.label}无可用商品`);
+        return;
       }
     }
 
-    // 如果没有可用商品，使用默认配置
     if (targetIds.length === 0) {
-      if (hour < 12) {
-        targetIds = ["4", "3", "2"];
-        targetNames = ["QQ音乐会员-周卡", "喜马拉雅会员-周卡", "5元话费券"];
-      } else {
-        targetIds = ["11", "12", "13"];
-        targetNames = ["爱奇艺月卡", "哔哩哗哩大会员", "滴滴快车5元代金券"];
-      }
+      targetIds = session.defaultIds;
+      targetNames = session.defaultNames;
       this.log(`⚠️ 使用默认商品配置：${targetNames.join(', ')}`);
     }
 
     let success = false;
+    let successPrizeName = "";
     for (let i = 0; i < targetIds.length; i++) {
       const prizeId = targetIds[i];
       const prizeName = targetNames[i] || PRIZE_NAME_MAP[prizeId] || `商品${prizeId}`;
@@ -330,6 +354,7 @@ class SeckillService {
       const result = await this.seckill(prizeId, prizeName);
       if (result) {
         success = true;
+        successPrizeName = prizeName;
         break;
       }
       this.log(`⚠️ ${prizeName} 领取失败，尝试下一个...`);
@@ -338,6 +363,9 @@ class SeckillService {
 
     if (!success) {
       this.log("❌ 所有商品均领取失败");
+      await this.sendWechatMessage(`账号[${this.index}] 本轮秒杀未成功`);
+    } else {
+      await this.sendWechatMessage(`账号[${this.index}] ${successPrizeName} 秒杀成功`);
     }
   }
 }

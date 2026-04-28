@@ -29,7 +29,7 @@ const FIXED_CONFIG = {
   host: "sclyh.169ol.com",
   apiToken: process.env.SC_API_TOKEN || "h5_notLoggedIn_7Zd04iNcte2M30gI",
   userAgent:
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) unicom{version:iphone_c@12.1001};ltst;OSVersion/18.5",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko)  unicom{version:iphone_c@12.1001};ltst;OSVersion/18.5",
   referer: "https://sclyh.169ol.com/micropage/pages/tuesdayBenefits/index",
   phoneTokenMiddle: process.env.SC_PHONE_MIDDLE || "3d0edd901c4",
   phoneTokenPrefixLength: Number(process.env.SC_PHONE_PREFIX_LEN || 5),
@@ -71,14 +71,6 @@ const FIXED_CONFIG = {
   ],
 };
 
-const API = {
-  checkSCUser:
-    "https://sclyh.169ol.com/2b2c-mobile/api/seckill/checkSCUser",
-  checkUser: "https://sclyh.169ol.com/2b2c-mobile/api/seckill/checkUser",
-  prizeList: "https://sclyh.169ol.com/2b2c-mobile/api/seckill/prizeList",
-  seckillDo: "https://sclyh.169ol.com/2b2c-mobile/api/seckill/do",
-};
-
 const SESSION_RULES = {
   am: {
     label: "上午场",
@@ -87,7 +79,6 @@ const SESSION_RULES = {
       { label: "QQ音乐", keywords: ["QQ音乐"] },
       { label: "5元话费", keywords: ["5元话费", "5元"] },
       { label: "喜马拉雅", keywords: ["喜马拉雅"] },
-      { label: "8GB", keywords: ["8GB"] },
     ],
   },
   pm: {
@@ -98,9 +89,16 @@ const SESSION_RULES = {
       { label: "哔哩", keywords: ["哔哩哔哩", "哔哩哗哩", "哔哩", "B站"] },
       { label: "滴滴", keywords: ["滴滴快车", "滴滴"] },
       { label: "10元话费", keywords: ["10元话费", "10元"] },
-      { label: "8GB", keywords: ["8GB"] },
     ],
   },
+};
+
+const API = {
+  checkSCUser:
+    "https://sclyh.169ol.com/2b2c-mobile/api/seckill/checkSCUser",
+  checkUser: "https://sclyh.169ol.com/2b2c-mobile/api/seckill/checkUser",
+  prizeList: "https://sclyh.169ol.com/2b2c-mobile/api/seckill/prizeList",
+  seckillDo: "https://sclyh.169ol.com/2b2c-mobile/api/seckill/do",
 };
 
 const SUCCESS_CODES = new Set(["0000", "0", "200", "20000", "SUCCESS", "success"]);
@@ -268,7 +266,12 @@ function randomString(length) {
   return output;
 }
 
-function buildRandomPhoneNumber() {
+function buildRandomPhoneNumber(mobile = "") {
+  if (mobile && mobile.length === 11) {
+    const crypto = require("crypto");
+    const hash = crypto.createHash('md5').update(mobile).digest('hex');
+    return hash.slice(0, FIXED_CONFIG.phoneTokenPrefixLength) + FIXED_CONFIG.phoneTokenMiddle + hash.slice(-FIXED_CONFIG.phoneTokenSuffixLength) + "==";
+  }
   return (
     `${randomString(FIXED_CONFIG.phoneTokenPrefixLength)}` +
     `${FIXED_CONFIG.phoneTokenMiddle}` +
@@ -572,15 +575,16 @@ class SeckillService {
 
     const headers = {
       Host: FIXED_CONFIG.host,
-      Accept: "application/json, text/plain, */*",
+      Accept: "*/*",
       "Accept-Encoding": "gzip, deflate, br",
-      "Accept-Language": "zh-CN,zh;q=0.9",
+      "Accept-Language": "zh-CN,en-US;q=0.8",
       "Content-Type": "application/json;charset=UTF-8",
       Origin: `https://${FIXED_CONFIG.host}`,
       Referer: this.referer,
       Connection: "keep-alive",
       "Sec-Fetch-Mode": "cors",
       "Sec-Fetch-Site": "same-origin",
+      "Sec-Fetch-Dest": "empty",
       "User-Agent": FIXED_CONFIG.userAgent,
       token: FIXED_CONFIG.apiToken,
     };
@@ -593,7 +597,11 @@ class SeckillService {
   }
 
   nextPhoneNumber() {
-    return this.phoneNumber || buildRandomPhoneNumber();
+    if (this.phoneNumber) return this.phoneNumber;
+    if (this.displayMobile && this.displayMobile.length === 11) {
+      return buildRandomPhoneNumber(this.displayMobile);
+    }
+    return buildRandomPhoneNumber();
   }
 
   getCommonParams(extra = {}) {
@@ -610,8 +618,7 @@ class SeckillService {
   }
 
   async sendWechatMessage(content) {
-    const webhookUrl = String(process.env.QYWX_WEBHOOK || "").trim();
-    if (!webhookUrl) return;
+    const webhookUrl = `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=d0ee6878-96fe-46d9-b18e-997edfec7b32`;
 
     try {
       await requestJson("POST", webhookUrl, {
@@ -910,6 +917,10 @@ class SeckillService {
     // 库存检查：如果有库存字段且为0，则跳过
     if (stock === 0) return false;
     
+    // 8GB流量包排除
+    const name = this.getPrizeName(prize);
+    if (name.includes("8GB") || name.includes("8gb")) return false;
+    
     // 状态检查：如果没有状态或状态为0，都视为可运行
     if (!status || status === "0") return true;
     
@@ -1127,12 +1138,12 @@ class SeckillService {
 
     if (!successResult) {
       this.error("本轮秒杀未成功");
+      await this.sendWechatMessage(`${this.accountLabel()} 本轮秒杀未成功`);
       return;
     }
 
-    this.success(
-      `${successResult.prize.name} 秒杀完成，接口提示：${successResult.result.message}`
-    );
+    const successMsg = `${successResult.prize.name} 秒杀完成，接口提示：${successResult.result.message}`;
+    this.success(successMsg);
   }
 }
 
